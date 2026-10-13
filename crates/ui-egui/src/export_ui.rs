@@ -90,7 +90,9 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens, kind: E
     } else if kind == ExportKind::AllImages {
         ui.horizontal(|ui| {
             ui.label(tl!("Exclude images smaller than"));
-            let label = move |n: u32| if n == 0 { tl!("No limit").to_string() } else { format!("{n} pixels") };
+            let label = move |n: u32| {
+                if n == 0 { tl!("No limit").to_string() } else { crate::i18n::trn(crate::i18n::current(), u64::from(n), "{n} pixel", "{n} pixels") }
+            };
             egui::ComboBox::from_id_salt("export-min").selected_text(label(d.min_side)).show_ui(ui, |ui| {
                 for n in [0, 16, 32, 64, 128, 256] {
                     ui.selectable_value(&mut d.min_side, n, label(n));
@@ -181,11 +183,21 @@ fn run(
                     return crate::i18n::fmt(tl!("Export stopped: {e}"), &[("e", &e.to_string())]);
                 }
             }
-            if total == 1 {
+            let mut msg = if total == 1 {
                 crate::i18n::fmt(tl!("Exported 1 image"), &[])
             } else {
                 crate::i18n::fmt(tl!("Exported {n} images"), &[("n", &total.to_string())])
+            };
+            // Pages too large for the renderer at the chosen resolution are drawn at the most it
+            // allows: say so, rather than leave a smaller image unexplained.
+            let lowered: Vec<f64> = pages.iter().map(|p| ex.dpi_used(*p, dpi)).filter(|used| *used < dpi.clamp(18.0, 1200.0) - 0.5).collect();
+            if let Some(lowest) = lowered.iter().copied().reduce(f64::min) {
+                msg.push_str(&crate::i18n::fmt(
+                    tl!(" ({n} at {dpi} dpi, the largest size they can be drawn at)"),
+                    &[("n", &lowered.len().to_string()), ("dpi", &format!("{}", lowest.floor()))],
+                ));
             }
+            msg
         }
         ExportKind::Text => {
             set(0, None);
@@ -206,7 +218,14 @@ fn run(
 impl PdfCraftApp {
     /// Start exporting the active document with the dialog's settings.
     pub(crate) fn start_export(&mut self, kind: ExportKind) {
+        // What's typed in a form field is part of the document (#166).
+        if !self.commit_form_typing() {
+            return;
+        }
         let Some((_, id)) = self.active_ids() else { return };
+        if !self.may_copy(id) {
+            return;
+        }
         let Some(doc) = self.session.get(id) else { return };
         let src = doc.export_source();
         let stem = doc.name.trim_end_matches(".pdf").trim_end_matches(".PDF").to_string();
@@ -217,29 +236,34 @@ impl PdfCraftApp {
         let status: ExportStatus = Arc::new(Mutex::new(Some((0, pages.len(), None))));
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let dir = match &self.export_dir_override {
-                Some(d) => Some(std::path::PathBuf::from(d)),
-                None => rfd::FileDialog::new().set_title(tl!("Choose a folder for the exported files").to_string()).pick_folder(),
-            };
-            let Some(dir) = dir else { return };
-            let st = status.clone();
-            let shown = dir.display().to_string();
-            let lang = crate::i18n::current();
-            let work = move || {
-                let sink = |name: &str, bytes: Vec<u8>| {
-                    crate::editing::write_atomically(&dir.join(name).to_string_lossy(), &bytes).map_err(|e| format!("{name}: {e}"))
+            let start = move |app: &mut Self, dir: std::path::PathBuf, inline: bool| {
+                let st = status.clone();
+                let shown = dir.display().to_string();
+                let lang = crate::i18n::current();
+                let work = move || {
+                    let sink = |name: &str, bytes: Vec<u8>| {
+                        crate::editing::write_atomically(&dir.join(name).to_string_lossy(), &bytes).map_err(|e| format!("{name}: {e}"))
+                    };
+                    let msg = run(src, kind, dpi, format, min_side, pages, stem, sink, &st, lang);
+                    if let Ok(mut s) = st.lock() {
+                        let (done, total) = s.as_ref().map_or((0, 0), |(d, t, _)| (*d, *t));
+                        let done_msg = crate::i18n::fmt(tl!("{msg} to {dir}"), &[("msg", &msg), ("dir", &shown)]);
+                        *s = Some((done.max(total), total, Some(done_msg)));
+                    }
                 };
-                let msg = run(src, kind, dpi, format, min_side, pages, stem, sink, &st, lang);
-                if let Ok(mut s) = st.lock() {
-                    let (done, total) = s.as_ref().map_or((0, 0), |(d, t, _)| (*d, *t));
-                    let done_msg = crate::i18n::fmt(tl!("{msg} to {dir}"), &[("msg", &msg), ("dir", &shown)]);
-                    *s = Some((done.max(total), total, Some(done_msg)));
+                if inline {
+                    work(); // tests and automation: synchronous
+                } else {
+                    std::thread::Builder::new().name("pdfcraft-export".into()).spawn(work).ok();
                 }
+                app.export_status = Some(status);
             };
-            if self.export_dir_override.is_some() {
-                work(); // tests and automation: synchronous
-            } else {
-                std::thread::Builder::new().name("pdfcraft-export".into()).spawn(work).ok();
+            match self.export_dir_override.clone() {
+                Some(d) => start(self, d.into(), true),
+                None => {
+                    let dialog = rfd::AsyncFileDialog::new().set_title(tl!("Choose a folder for the exported files").to_string());
+                    self.ask_one(crate::pickers::Ask::Folder(dialog), None, move |app, dir| start(app, dir, false));
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -259,8 +283,8 @@ impl PdfCraftApp {
             if let Ok(mut s) = status.lock() {
                 *s = Some((0, 0, Some(msg)));
             }
+            self.export_status = Some(status);
         }
-        self.export_status = Some(status);
     }
 
     /// Show export progress, and the result once it is done.

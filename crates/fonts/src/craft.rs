@@ -43,75 +43,123 @@ pub fn ui_chinese_fonts() -> Vec<&'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.covers("Hans")).collect()
 }
 
-/// The `Hant` craft-fonts faces for Traditional Chinese interface text, in manifest order.
-/// Empty when the build input has no such face (Traditional Chinese then falls back to the
-/// Simplified Chinese and Japanese faces).
-pub fn ui_traditional_fonts() -> Vec<&'static CraftFont> {
-    CRAFT_FONTS.iter().filter(|f| f.covers("Hant")).collect()
+/// The `Arab` craft-fonts faces for Arabic-script interface text (file names, document titles),
+/// in manifest order. Empty when built without craft-fonts or when it has no Arabic face.
+pub fn ui_arabic_fonts() -> Vec<&'static CraftFont> {
+    arabic(CRAFT_FONTS.iter())
 }
 
-/// Which script's faces lead the interface CJK fallback stack.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CjkPreference {
-    /// Japanese first (the historical default).
-    Japanese,
-    /// Simplified Chinese first: `Hans`, then `Hant`, then Japanese.
-    Simplified,
-    /// Traditional Chinese first: `Hant`, then `Hans`, then Japanese.
-    Traditional,
+/// The face for Arabic text written into PDFs: the first `Arab` face. `None` when built without
+/// craft-fonts or when its revision has no Arabic face.
+pub fn document_arabic_font() -> Option<&'static CraftFont> {
+    ui_arabic_fonts().into_iter().next()
 }
 
-/// Interface CJK faces in fallback order for the UI language (see [`CjkPreference`]).
+fn arabic<'a>(faces: impl IntoIterator<Item = &'a CraftFont>) -> Vec<&'a CraftFont> {
+    faces.into_iter().filter(|f| f.covers("Arab")).collect()
+}
+
+/// The `Telu` craft-fonts faces for Telugu interface text (the Telugu catalog, file names,
+/// document titles), in manifest order. Empty when built without craft-fonts or when it has no
+/// Telugu face.
+pub fn ui_telugu_fonts() -> Vec<&'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.covers("Telu")).collect()
+}
+
+/// Thai faces shared by the interface and PDF text writer.
+pub fn ui_thai_fonts() -> Vec<&'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.covers("Thai")).collect()
+}
+
+pub fn document_thai_font() -> Option<&'static CraftFont> {
+    ui_thai_fonts().into_iter().next()
+}
+
+/// The `Hebr` craft-fonts faces for Hebrew interface text (file names, document titles, text
+/// being edited), in manifest order. Empty when built without craft-fonts or when it has no
+/// Hebrew face.
+pub fn ui_hebrew_fonts() -> Vec<&'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.covers("Hebr")).collect()
+}
+
+/// The face for Hebrew text written into PDFs: the `Hebr` face of the asked weight, else its
+/// Regular, else any `Hebr` face. `None` without craft-fonts or without a Hebrew face.
+pub fn document_hebrew_font(bold: bool) -> Option<&'static CraftFont> {
+    hebrew_face(CRAFT_FONTS, bold)
+}
+
+fn hebrew_face(faces: &[CraftFont], bold: bool) -> Option<&CraftFont> {
+    let hebr = || faces.iter().filter(|f| f.covers("Hebr"));
+    let style = if bold { "Bold" } else { "Regular" };
+    hebr().find(|f| f.style == style).or_else(|| hebr().find(|f| f.style == "Regular")).or_else(|| hebr().next())
+}
+
+/// Interface CJK faces in fallback order for the UI language: Simplified Chinese first when
+/// `prefer_hans`, otherwise Japanese first (the historical default).
 ///
 /// The order matters beyond glyph shapes. egui renders each character with the FIRST face that
 /// has its glyph, so with Japanese first a Simplified-only character (e.g. U+6B22 欢, absent
 /// from Japanese faces) lands in a different face than its neighbours; the mixed vertical
 /// metrics then sink it below the line. Preferring the UI language's face keeps one line in
-/// one face with one baseline. The second choice stays inside the Noto CJK family (identical
-/// metrics) before falling back to the Japanese faces.
-pub fn ui_cjk_fonts(prefer: CjkPreference) -> Vec<&'static CraftFont> {
-    order_cjk(CRAFT_FONTS.iter(), prefer)
+/// one face with one baseline.
+pub fn ui_cjk_fonts(prefer_hans: bool) -> Vec<&'static CraftFont> {
+    order_cjk(CRAFT_FONTS.iter(), prefer_hans)
 }
 
-fn order_cjk<'a>(faces: impl IntoIterator<Item = &'a CraftFont>, prefer: CjkPreference) -> Vec<&'a CraftFont> {
-    let mut out: Vec<&'a CraftFont> = faces.into_iter().filter(|f| f.covers("Hans") || f.covers("Hant") || f.covers("Jpan")).collect();
-    // Rank of the face's script group (the sort is stable, so manifest order holds in a rank).
-    let rank = |f: &CraftFont| match prefer {
-        CjkPreference::Japanese => usize::from(!f.covers("Jpan")),
-        CjkPreference::Simplified => {
-            if f.covers("Hans") {
-                0
-            } else if f.covers("Hant") {
-                1
-            } else {
-                2
-            }
-        }
-        CjkPreference::Traditional => {
-            if f.covers("Hant") {
-                0
-            } else if f.covers("Hans") {
-                1
-            } else {
-                2
-            }
-        }
-    };
-    // Within each group the Japanese UI face (BIZ UDPGothic, not a serif) leads, otherwise
-    // manifest order (the sort is stable).
-    out.sort_by_key(|f| (rank(f), f.family != "BIZ UDPGothic"));
+fn order_cjk<'a>(faces: impl IntoIterator<Item = &'a CraftFont>, prefer_hans: bool) -> Vec<&'a CraftFont> {
+    let mut out: Vec<&'a CraftFont> = faces.into_iter().filter(|f| f.covers("Hans") || f.covers("Jpan")).collect();
+    let first = if prefer_hans { "Hans" } else { "Jpan" };
+    // The preferred script's faces first (a face covering both counts as preferred); within each
+    // group the Japanese UI face (BIZ UDPGothic, not a serif) leads, otherwise manifest order
+    // (the sort is stable).
+    out.sort_by_key(|f| (!f.covers(first), f.family != "BIZ UDPGothic"));
     out
 }
 
 /// The face for Japanese text written into PDFs (serif document text): Shippori Mincho, then
 /// BIZ UDMincho, then any other regular `Jpan` face. `None` without craft-fonts.
 pub fn document_japanese_font() -> Option<&'static CraftFont> {
-    let jpan = || CRAFT_FONTS.iter().filter(|f| f.covers("Jpan"));
-    ["Shippori Mincho", "BIZ UDMincho"]
-        .iter()
-        .find_map(|family| jpan().find(|f| f.family == *family && f.style == "Regular"))
-        .or_else(|| jpan().find(|f| f.style == "Regular"))
-        .or_else(|| jpan().next())
+    document_face(CRAFT_FONTS, true, false)
+}
+
+/// A real Japanese document face matching serif/sans and weight where available.
+/// Sans text prefers BIZ UDPGothic Bold or Regular. Missing weights fall back to Regular;
+/// serif text keeps the document Mincho preference. No synthetic weight or slant is applied.
+/// `None` without craft-fonts. The small web input currently has only Gothic Regular.
+pub fn document_japanese_font_for_style(serif: bool, bold: bool) -> Option<&'static CraftFont> {
+    document_face(CRAFT_FONTS, serif, bold)
+}
+
+/// Every `Jpan` face that can stand in for the document text, the best match for the style first
+/// (the face [`document_japanese_font_for_style`] returns), then the others. Not every face has
+/// every glyph (their coverage of e.g. Cyrillic differs), so a caller can move on to the next one.
+/// Empty without craft-fonts.
+pub fn document_japanese_fonts_for_style(serif: bool, bold: bool) -> Vec<&'static CraftFont> {
+    document_faces(CRAFT_FONTS, serif, bold)
+}
+
+fn document_face(faces: &[CraftFont], serif: bool, bold: bool) -> Option<&CraftFont> {
+    document_faces(faces, serif, bold).into_iter().next()
+}
+
+fn document_faces(faces: &[CraftFont], serif: bool, bold: bool) -> Vec<&CraftFont> {
+    let jpan = || faces.iter().filter(|f| f.covers("Jpan"));
+    let mut preferred = Vec::new();
+    if !serif {
+        let style = if bold { "Bold" } else { "Regular" };
+        preferred.extend(jpan().find(|f| f.family == "BIZ UDPGothic" && f.style == style));
+        preferred.extend(jpan().find(|f| f.family == "BIZ UDPGothic" && f.style == "Regular"));
+    }
+    for family in ["Shippori Mincho", "BIZ UDMincho"] {
+        preferred.extend(jpan().find(|f| f.family == family && f.style == "Regular"));
+    }
+    let mut out: Vec<&CraftFont> = Vec::new();
+    for face in preferred.into_iter().chain(jpan().filter(|f| f.style == "Regular")).chain(jpan()) {
+        if !out.iter().any(|f| std::ptr::eq(*f, face)) {
+            out.push(face);
+        }
+    }
+    out
 }
 
 const fn str_eq(a: &str, b: &str) -> bool {
@@ -156,32 +204,96 @@ mod tests {
         static LATN: &[&str] = &["Latn"];
         static JPAN_LATN: &[&str] = &["Jpan", "Latn"];
         static HANS_LATN: &[&str] = &["Hans", "Latn"];
-        static HANT_LATN: &[&str] = &["Hant", "Latn"];
         let biz_bold = CraftFont { family: "BIZ UDPGothic", style: "Bold", scripts: JPAN_LATN, bytes: BYTES };
         let biz = CraftFont { family: "BIZ UDPGothic", style: "Regular", scripts: JPAN_LATN, bytes: BYTES };
         let hans = CraftFont { family: "FakeHans", style: "Regular", scripts: HANS_LATN, bytes: BYTES };
-        let hant = CraftFont { family: "FakeHant", style: "Regular", scripts: HANT_LATN, bytes: BYTES };
         let inter = CraftFont { family: "Inter", style: "Regular", scripts: LATN, bytes: BYTES };
-        let faces = [biz_bold, biz, hans, hant, inter];
-        // Simplified Chinese mode: Hans, then Hant, then Japanese.
-        let zh: Vec<&str> = order_cjk([&faces[0], &faces[2], &faces[3], &faces[1]], CjkPreference::Simplified).iter().map(|f| f.family).collect();
-        assert_eq!(zh, ["FakeHans", "FakeHant", "BIZ UDPGothic", "BIZ UDPGothic"]);
-        // Traditional Chinese mode: Hant, then Hans, then Japanese.
-        let tw: Vec<&str> = order_cjk([&faces[0], &faces[2], &faces[3], &faces[1]], CjkPreference::Traditional).iter().map(|f| f.family).collect();
-        assert_eq!(tw, ["FakeHant", "FakeHans", "BIZ UDPGothic", "BIZ UDPGothic"]);
+        let faces = [biz_bold, biz, hans, inter];
+        // Chinese mode: the Hans group first (manifest order), then Japanese.
+        let zh: Vec<&str> = order_cjk([&faces[0], &faces[2], &faces[1]], true).iter().map(|f| f.family).collect();
+        assert_eq!(zh, ["FakeHans", "BIZ UDPGothic", "BIZ UDPGothic"]);
         // Japanese mode keeps the historical default: the Japanese UI face first.
-        let ja: Vec<&str> = order_cjk([&faces[0], &faces[2], &faces[1]], CjkPreference::Japanese).iter().map(|f| f.family).collect();
+        let ja: Vec<&str> = order_cjk([&faces[0], &faces[2], &faces[1]], false).iter().map(|f| f.family).collect();
         assert_eq!(ja, ["BIZ UDPGothic", "BIZ UDPGothic", "FakeHans"]);
         // Latin-only faces are never interface CJK fallbacks.
-        for prefer in [CjkPreference::Japanese, CjkPreference::Simplified, CjkPreference::Traditional] {
-            assert!(order_cjk(&faces, prefer).iter().all(|f| f.covers("Hans") || f.covers("Hant") || f.covers("Jpan")), "{prefer:?}");
-        }
+        assert!(order_cjk(&faces, true).iter().all(|f| f.covers("Hans") || f.covers("Jpan")));
         // A serif listed first in the manifest never leads the Japanese group, in either mode.
         let mincho = CraftFont { family: "Shippori Mincho", style: "Regular", scripts: JPAN_LATN, bytes: BYTES };
-        let zh: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], CjkPreference::Simplified).iter().map(|f| f.family).collect();
+        let zh: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], true).iter().map(|f| f.family).collect();
         assert_eq!(zh, ["FakeHans", "BIZ UDPGothic", "Shippori Mincho"]);
-        let ja: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], CjkPreference::Japanese).iter().map(|f| f.family).collect();
+        let ja: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], false).iter().map(|f| f.family).collect();
         assert_eq!(ja, ["BIZ UDPGothic", "Shippori Mincho", "FakeHans"]);
+    }
+
+    #[test]
+    fn document_faces_match_style_without_inventing_missing_weights() {
+        let faces = [
+            CraftFont { family: "Shippori Mincho", style: "Regular", scripts: &["Jpan"], bytes: b"serif" },
+            CraftFont { family: "BIZ UDPGothic", style: "Regular", scripts: &["Jpan"], bytes: b"sans" },
+            CraftFont { family: "BIZ UDPGothic", style: "Bold", scripts: &["Jpan"], bytes: b"bold" },
+            CraftFont { family: "BIZ UDPGothic", style: "Bold", scripts: &["Latn"], bytes: b"not-japanese" },
+        ];
+        assert_eq!(document_face(&faces, false, false).unwrap().bytes, b"sans");
+        assert_eq!(document_face(&faces, false, true).unwrap().bytes, b"bold");
+        assert_eq!(document_face(&faces, true, false).unwrap().bytes, b"serif");
+        assert_eq!(document_face(&faces, true, true).unwrap().bytes, b"serif");
+        assert_eq!(document_face(&faces[..2], false, true).unwrap().bytes, b"sans");
+        assert_eq!(document_face(&faces[..1], false, true).unwrap().bytes, b"serif");
+        // Every Japanese face is a candidate, the style's match first and none twice.
+        let order: Vec<&[u8]> = document_faces(&faces, false, true).iter().map(|f| f.bytes).collect();
+        assert_eq!(order, [b"bold".as_slice(), b"sans", b"serif"]);
+        let order: Vec<&[u8]> = document_faces(&faces, true, false).iter().map(|f| f.bytes).collect();
+        assert_eq!(order, [b"serif".as_slice(), b"sans", b"bold"]);
+        assert!(document_face(&faces[3..], false, true).is_none());
+        assert!(document_face(&[], false, true).is_none());
+    }
+
+    #[test]
+    fn arabic_faces_are_picked_by_script_in_manifest_order() {
+        // Synthetic faces: the filter must not depend on the real build input.
+        static BYTES: &[u8] = b"fake";
+        static ARAB_LATN: &[&str] = &["Arab", "Latn"];
+        static JPAN: &[&str] = &["Jpan"];
+        let naskh = CraftFont { family: "FakeNaskh", style: "Regular", scripts: ARAB_LATN, bytes: BYTES };
+        let biz = CraftFont { family: "BIZ UDPGothic", style: "Regular", scripts: JPAN, bytes: BYTES };
+        let kufi = CraftFont { family: "FakeKufi", style: "Regular", scripts: ARAB_LATN, bytes: BYTES };
+        let faces = [naskh, biz, kufi];
+        let ar: Vec<&str> = arabic(&faces).iter().map(|f| f.family).collect();
+        assert_eq!(ar, ["FakeNaskh", "FakeKufi"]);
+        // An Arabic face is never a CJK fallback, and the other way round.
+        assert!(order_cjk(&faces, false).iter().all(|f| f.family == "BIZ UDPGothic"));
+        assert_eq!(ui_arabic_fonts().len(), CRAFT_FONTS.iter().filter(|f| f.covers("Arab")).count());
+    }
+
+    /// Family-name prefixes `build.rs` never embeds (its own `BARRED_FAMILIES`): Adobe's type
+    /// designs, which includes Noto CJK (Source Han under another name).
+    const BARRED_FAMILIES: [&str; 5] = ["Source Han", "Source Serif", "Source Sans", "Noto Sans CJK", "Noto Serif CJK"];
+
+    /// Whatever the craft-fonts checkout holds, no Adobe type design is embedded (AGENTS.md §1.1).
+    #[test]
+    fn barred_families_are_never_embedded() {
+        for face in CRAFT_FONTS {
+            assert!(!BARRED_FAMILIES.iter().any(|barred| face.family.starts_with(barred)), "{} is embedded", face.name());
+        }
+        assert!(BARRED_FAMILIES.iter().any(|barred| "Noto Sans CJK SC".starts_with(barred)));
+        assert!(!BARRED_FAMILIES.iter().any(|barred| "Noto Sans Arabic".starts_with(barred)));
+    }
+
+    #[test]
+    fn hebrew_document_faces_follow_the_weight() {
+        static HEBR_LATN: &[&str] = &["Hebr", "Latn"];
+        let faces = [
+            CraftFont { family: "BIZ UDPGothic", style: "Bold", scripts: &["Jpan"], bytes: b"not-hebrew" },
+            CraftFont { family: "FakeHebrew", style: "Regular", scripts: HEBR_LATN, bytes: b"regular" },
+            CraftFont { family: "FakeHebrew", style: "Bold", scripts: HEBR_LATN, bytes: b"bold" },
+        ];
+        assert_eq!(hebrew_face(&faces, false).map(|f| f.bytes), Some(&b"regular"[..]));
+        assert_eq!(hebrew_face(&faces, true).map(|f| f.bytes), Some(&b"bold"[..]));
+        // No bold face: Regular, never a face of another script.
+        assert_eq!(hebrew_face(&faces[..2], true).map(|f| f.bytes), Some(&b"regular"[..]));
+        assert!(hebrew_face(&faces[..1], false).is_none());
+        assert_eq!(ui_hebrew_fonts().len(), CRAFT_FONTS.iter().filter(|f| f.covers("Hebr")).count());
+        assert_eq!(document_hebrew_font(false).is_some(), CRAFT_FONTS.iter().any(|f| f.covers("Hebr")));
     }
 
     #[test]
@@ -193,8 +305,6 @@ mod tests {
         assert_eq!(ui.len(), CRAFT_FONTS.iter().filter(|f| f.covers("Jpan")).count());
         let ui_zh = ui_chinese_fonts();
         assert_eq!(ui_zh.len(), CRAFT_FONTS.iter().filter(|f| f.covers("Hans")).count());
-        let ui_tw = ui_traditional_fonts();
-        assert_eq!(ui_tw.len(), CRAFT_FONTS.iter().filter(|f| f.covers("Hant")).count());
         if CRAFT_FONTS.is_empty() {
             eprintln!("built without craft-fonts (CRAFT_FONTS_DIR unset): no Japanese faces, as expected");
             assert!(SHIPPORI_MINCHO.is_none() && ui.is_empty() && ui_zh.is_empty());

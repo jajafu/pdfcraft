@@ -65,7 +65,7 @@ pub(crate) fn create_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) 
     egui::Grid::new("stamp-create").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
         let l = ui.label(tl!("Category:"));
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut d.category).desired_width(200.0).hint_text(tl!("e.g. My stamps"))).labelled_by(l.id);
+            ui.add(crate::widgets::line(&mut d.category).desired_width(200.0).hint_text(tl!("e.g. My stamps"))).labelled_by(l.id);
             if !categories.is_empty() {
                 egui::ComboBox::from_id_salt("stamp-categories").selected_text("").width(24.0).show_ui(ui, |ui| {
                     for c in &categories {
@@ -78,7 +78,7 @@ pub(crate) fn create_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) 
         });
         ui.end_row();
         let l = ui.label(tl!("Name:"));
-        ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(200.0)).labelled_by(l.id);
+        ui.add(crate::widgets::line(&mut d.name).desired_width(200.0)).labelled_by(l.id);
         ui.end_row();
     });
     ui.add_space(12.0);
@@ -133,21 +133,22 @@ impl PdfCraftApp {
     pub(crate) fn pick_stamp_file(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let picked = match self.save_override.clone() {
-                Some(p) if [".png", ".jpg", ".pdf"].iter().any(|e| p.ends_with(e)) => Some(std::path::PathBuf::from(p)),
-                Some(_) => None,
-                None => rfd::FileDialog::new()
-                    .add_filter(tl!("PDF or image"), &["pdf", "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx"])
-                    .set_title(tl!("Select a file for the stamp"))
-                    .pick_file(),
-            };
-            let Some(path) = picked else { return };
-            match std::fs::read(&path) {
+            let read = |app: &mut Self, path: std::path::PathBuf| match std::fs::read(&path) {
                 Ok(bytes) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.start_custom_stamp(name, bytes);
+                    app.start_custom_stamp(name, bytes);
                 }
-                Err(e) => self.notify_fmt("Couldn't read {name}: {e}", &[("name", &path.display().to_string()), ("e", &e.to_string())]),
+                Err(e) => app.notify_fmt("Couldn't read {name}: {e}", &[("name", &path.display().to_string()), ("e", &e.to_string())]),
+            };
+            match self.save_override.clone() {
+                Some(p) if [".png", ".jpg", ".pdf"].iter().any(|e| p.ends_with(e)) => read(self, p.into()),
+                Some(_) => {}
+                None => {
+                    let dialog = rfd::AsyncFileDialog::new()
+                        .add_filter(tl!("PDF or image"), &["pdf", "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx"])
+                        .set_title(tl!("Select a file for the stamp"));
+                    self.ask_one(crate::pickers::Ask::File(dialog), None, read);
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
