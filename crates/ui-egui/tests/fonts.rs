@@ -54,7 +54,7 @@ fn chinese_ui_text_prefers_the_chinese_face() {
         );
         return;
     }
-    let defs = theme::font_definitions_for(true);
+    let defs = theme::font_definitions_for(pdfcraft_fonts::CjkPreference::Simplified);
     let hans: Vec<String> = pdfcraft_fonts::ui_chinese_fonts().iter().map(|f| f.name()).collect();
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         let stack = &defs.families[&family];
@@ -69,6 +69,37 @@ fn chinese_ui_text_prefers_the_chinese_face() {
     }
     for w in layout_widths(&mut fonts, CHINESE) {
         assert!(w > 13.0 * 0.8 * CHINESE.chars().count() as f32, "{w}");
+    }
+}
+
+/// Traditional Chinese mode orders the CJK fallback with the `Hant` group first, so one
+/// line never mixes faces with different vertical metrics. Without an allowed `Hant` face
+/// in the build input the order part still holds; glyph coverage follows the craft-fonts
+/// checkout.
+#[test]
+fn traditional_chinese_ui_text_prefers_the_traditional_face() {
+    if pdfcraft_fonts::ui_traditional_fonts().is_empty() {
+        eprintln!(
+            "skipping traditional_chinese_ui_text_prefers_the_traditional_face: no Hant face bundled (set CRAFT_FONTS_DIR with an allowed Traditional Chinese face to run it)"
+        );
+        return;
+    }
+    const TRADITIONAL: &str = "繁體中文歡迎";
+    let defs = theme::font_definitions_for(pdfcraft_fonts::CjkPreference::Traditional);
+    let hant: Vec<String> = pdfcraft_fonts::ui_traditional_fonts().iter().map(|f| f.name()).collect();
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        let stack = &defs.families[&family];
+        let first_tw = stack.iter().position(|n| hant.iter().any(|h| h == n)).expect("a Hant face is a fallback");
+        let first_ja = stack.iter().position(|n| n.starts_with("BIZ UDPGothic")).expect("BIZ UDPGothic is a fallback");
+        let own = stack.iter().position(|n| n == "Inter" || n == "JetBrainsMono").expect("the app's own font");
+        assert!(own < first_tw && first_tw < first_ja, "{family:?}: {stack:?}");
+    }
+    let mut fonts = Fonts::new(TextOptions::default(), defs);
+    for id in families() {
+        assert!(fonts.has_glyphs(&id, TRADITIONAL), "{id:?} lacks {TRADITIONAL}");
+    }
+    for w in layout_widths(&mut fonts, TRADITIONAL) {
+        assert!(w > 13.0 * 0.8 * TRADITIONAL.chars().count() as f32, "{w}");
     }
 }
 

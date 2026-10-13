@@ -19,8 +19,9 @@ set). Without that variable `CRAFT_FONTS` is empty and everything below copes:
 - `ui_japanese_fonts`: the `Jpan` faces for the interface, BIZ UDPGothic first.
 - `ui_chinese_fonts`: the `Hans` faces for the interface, in manifest order (without one,
   Chinese characters the Japanese faces lack show the replacement glyph).
-- `ui_cjk_fonts(prefer_hans)`: both in fallback order for the UI language (Chinese group first
-  in Chinese mode, so one line never mixes faces with different vertical metrics).
+- `ui_traditional_fonts`: the `Hant` faces for the interface, in manifest order.
+- `ui_cjk_fonts(prefer)`: all three in fallback order for the UI language (the language's
+  own group first, so one line never mixes faces with different vertical metrics).
 - `document_japanese_font` / `japanese_glyph`: the face (Shippori Mincho, then BIZ UDMincho) whose
   outlines become the Type 3 fallback font for Japanese text written into PDFs. Without it,
   `japanese_glyph` returns `GlyphError::NoFont` and the editor reports a clear error.
