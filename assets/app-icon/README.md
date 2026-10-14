@@ -3,7 +3,7 @@
 <img src="pdfcraft-small.svg" alt="PdfCraft app icon: a red-orange PDF document tile" width="128">
 
 **Motif:** a red-orange gradient document with a folded corner and white `PDF` lettering,
-stacked over a second sheet, on a light rounded tile.
+stacked over a second sheet, with a soft shadow on a transparent background.
 
 **Status (interim):** contributor-original raster artwork (`MIT OR Apache-2.0`). `pdfcraft.svg`
 and `pdfcraft-small.svg` are interim raster-embedded wrappers, not vector masters; every PNG,
