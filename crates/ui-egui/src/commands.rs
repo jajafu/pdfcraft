@@ -10,7 +10,6 @@ use pdfcraft_engine::commands::{self, COMMANDS, CommandSpec, Shortcut};
 use crate::{
     Dialog, Mode, PdfCraftApp, PropsTab, RightPanel, SaveTarget,
     theme::{ThemeKind, ThemePreference},
-    widgets,
 };
 
 /// Keys the document view handles itself (`canvas::shortcuts`), for the View menu, tooltips and
@@ -85,7 +84,17 @@ impl PdfCraftApp {
             return self.combine_can_undo(spec.needs == commands::Needs::Undo);
         }
         commands::is_enabled(spec, &self.session, self.active_ids().map(|(_, id)| id))
+            && (spec.id != "edit.copy"
+                || self
+                    .active
+                    .and_then(|i| self.views.get(i))
+                    .is_some_and(|v| !v.organize && (v.all_text || v.selected_text().is_some_and(|t| !t.is_empty()))))
             && (spec.needs != commands::Needs::TwoPageView || self.active.and_then(|i| self.views.get(i)).is_some_and(crate::DocView::cover_applies))
+            && match spec.id {
+                "view.previous_view" => self.active.and_then(|i| self.views.get(i)).is_some_and(|v| !v.back.is_empty()),
+                "view.next_view" => self.active.and_then(|i| self.views.get(i)).is_some_and(|v| !v.forward.is_empty()),
+                _ => true,
+            }
     }
 
     /// Run a registered command by id. Returns `false` when the id is unknown or the command
@@ -136,6 +145,7 @@ impl PdfCraftApp {
                     tl!("The document's security settings don't allow this change").to_string()
                 }
                 commands::Needs::Copying if self.active.is_some() => crate::copy_refused().to_string(),
+                commands::Needs::Printing if self.active.is_some() => crate::print_refused().to_string(),
                 commands::Needs::TwoPageView if self.active.is_some() => tl!("Switch to two-page view first to show the cover page").to_string(),
                 _ => tl!("Open a document first").to_string(),
             };
@@ -146,10 +156,12 @@ impl PdfCraftApp {
         let targets = active.map(|i| self.views[i].target_pages()).unwrap_or_default();
         match id {
             "ui.dock.reset" => {
-                if let Err(error) = crate::docking::command(self, true, &serde_json::Value::Null) {
+                if let Err(error) = crate::side_panels::command(self, true, &serde_json::Value::Null) {
                     self.notify(error);
                 }
             }
+            "view.side_panel" => self.toggle_side_panel(),
+            "view.tools_pane" => self.left_open = !self.left_open,
             "file.open" => self.open_dialog(),
             "file.open_recent" => match self.recent.first().map(|r| r.path.clone()) {
                 // The palette runs commands without a submenu: open the most recent file.
@@ -174,6 +186,7 @@ impl PdfCraftApp {
             "file.close_all" => self.close_all(),
             "file.revert" => self.dialog = Some(Dialog::Revert),
             "file.properties" => self.dialog = Some(Dialog::Properties(PropsTab::Description)),
+            "file.word_count" => self.dialog = Some(Dialog::WordCount),
             "protect.properties" => self.dialog = Some(Dialog::Properties(PropsTab::Security)),
             // A restricted document's security changes once its permissions password is entered.
             "protect.password" | "protect.remove" if self.active_ids().and_then(|(_, id)| self.session.get(id)).is_some_and(|d| d.can_unlock()) => {
@@ -185,6 +198,7 @@ impl PdfCraftApp {
                 self.protect_draft = Default::default();
                 self.dialog = Some(Dialog::Protect);
             }
+            "edit.attach" => self.attach_file_dialog(),
             "protect.remove" => {
                 if self.apply_edit(Edit::RemoveProtection) {
                     self.notify_tr("Security will be removed when you save");
@@ -214,9 +228,15 @@ impl PdfCraftApp {
                 }
             }
             "view.focus_page_input" => {
-                if let (Some(ctx), Some(view)) = (self.ctx.clone(), active.and_then(|i| self.views.get(i))) {
-                    // The page box in the toolbar (chrome.rs); select its number so typing replaces it.
-                    let id = egui::Id::new("page-input");
+                if let (Some(ctx), Some(view)) = (self.ctx.clone(), active.and_then(|i| self.views.get_mut(i))) {
+                    // The page box in the toolbar (chrome.rs); select its label so typing replaces it.
+                    let id = view.page_input_id();
+                    if !ctx.memory(|m| m.has_focus(id))
+                        && let Some(doc) = self.session.get(view.id)
+                    {
+                        // Navigation and this command can arrive before the next rail frame.
+                        view.page_input = view.current_page_label(doc.info.pages.get(view.current).map(|p| p.label.as_str()));
+                    }
                     ctx.memory_mut(|m| m.request_focus(id));
                     let mut state = egui::TextEdit::load_state(&ctx, id).unwrap_or_default();
                     let len = view.page_input.chars().count();
@@ -235,6 +255,11 @@ impl PdfCraftApp {
                 if let Some(i) = active {
                     let v = &mut self.views[i];
                     v.set_continuous(!v.continuous());
+                }
+            }
+            "view.page_gaps" => {
+                if let Some(view) = active.and_then(|i| self.views.get(i)) {
+                    self.set_active_page_gaps(!view.show_page_gaps);
                 }
             }
             "view.layout.cover" => {
@@ -256,10 +281,17 @@ impl PdfCraftApp {
                 let on = !self.full_screen;
                 match self.ctx.clone() {
                     Some(ctx) => self.set_full_screen(&ctx, on),
-                    None => self.full_screen = on,
+                    None => self.apply_full_screen(on),
                 }
             }
             "view.read_mode" => self.switch_mode(if self.mode == Mode::Read { Mode::AllTools } else { Mode::Read }, false),
+            "view.previous_view" | "view.next_view" => {
+                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
+                    return v.view_history(id == "view.next_view");
+                }
+            }
+            "view.next_tab" => self.step_tab(true),
+            "view.previous_tab" => self.step_tab(false),
             "view.theme" => {
                 let next = if self.theme == ThemeKind::Light { ThemePreference::Dark } else { ThemePreference::Light };
                 self.set_theme_preference(next);
@@ -292,6 +324,15 @@ impl PdfCraftApp {
                 }
             }
             "form.fields" => self.choose_right_panel(Some(RightPanel::Fields)),
+            "form.calculation_order" => {
+                self.left = crate::LeftPanel::CalculationOrder;
+                // The page edits the fields, so Preview ends; the page grid closes, as for a tool.
+                self.form_preview = false;
+                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
+                    v.organize = false;
+                }
+                self.reveal_tools();
+            }
             "comment.flatten" => {
                 self.apply_edit(Edit::Flatten { comments: true, fields: false });
             }
@@ -308,8 +349,12 @@ impl PdfCraftApp {
                 self.apply_edit(Edit::ResetForm { names: None });
             }
             "page.organize" => {
-                if let Some(i) = active {
-                    self.views[i].organize = !self.views[i].organize;
+                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
+                    if v.organize {
+                        v.organize = false;
+                    } else {
+                        v.open_organize();
+                    }
                 }
             }
             "page.rotate" => {
@@ -346,6 +391,7 @@ impl PdfCraftApp {
                     K::Background
                 };
                 self.marks_draft.replace = id.ends_with(".update");
+                self.marks_draft.preview = None;
                 self.dialog = Some(Dialog::Marks(kind));
             }
             "edit.bates" => {
@@ -356,6 +402,7 @@ impl PdfCraftApp {
                     self.marks_draft.hf.text[5] = "<<Bates Number#6#1##>>".into();
                 }
                 self.marks_draft.focused_box = 5;
+                self.marks_draft.preview = None;
                 self.dialog = Some(Dialog::Marks(pdfcraft_engine::MarkKind::HeaderFooter));
             }
             "edit.header_footer.remove" | "edit.watermark.remove" | "edit.background.remove" => {
@@ -370,6 +417,7 @@ impl PdfCraftApp {
             "export.image" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::Image)),
             "export.text" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::Text)),
             "a11y.check" => self.start_accessibility_check(),
+            "a11y.find_untagged" => self.find_untagged_content(),
             "ocr.recognize" => self.dialog = Some(Dialog::RecognizeText),
             "tools.js_console" => self.dialog = Some(Dialog::JsConsole),
             "tools.document_js" => {
@@ -399,6 +447,7 @@ impl PdfCraftApp {
                 }
             }
             "a11y.alt_text" => self.start_alt_text(),
+            "a11y.autotag_fields" => self.autotag_form_fields(),
             "a11y.tags" => self.choose_right_panel(Some(RightPanel::Tags)),
             "a11y.reading_options" => self.dialog = Some(Dialog::Properties(crate::PropsTab::Advanced)),
             "export.all_images" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::AllImages)),
@@ -441,7 +490,10 @@ impl PdfCraftApp {
                 self.redact_search.found = None;
                 self.dialog = Some(Dialog::RedactSearch);
             }
-            "redact.properties" => self.dialog = Some(Dialog::RedactProps),
+            "redact.properties" => {
+                self.redact_before = Some(self.redact_prefs.clone());
+                self.dialog = Some(Dialog::RedactProps);
+            }
             "redact.apply" => {
                 let marks = active.and_then(|i| self.session.get(self.views[i].id)).map_or(0, |d| d.redaction_marks());
                 if marks == 0 {
@@ -483,7 +535,7 @@ impl PdfCraftApp {
             }
             "sign.validate" => {
                 let certs = self.session.trusted_certificates().to_vec();
-                self.session.set_trusted_certificates(certs);
+                self.apply_trusted_certificates(certs);
                 self.choose_right_panel(Some(RightPanel::Signatures));
             }
             "sign.panel" => self.choose_right_panel(Some(RightPanel::Signatures)),
@@ -500,6 +552,12 @@ impl PdfCraftApp {
             "edit.snapshot" => {
                 self.quick_tool = crate::QuickTool::Snapshot;
                 self.notify_tr("Drag a rectangle around the area to copy");
+            }
+            "edit.copy" => {
+                if let (Some(i), Some(ctx)) = (active, self.ctx.clone()) {
+                    return self.copy_selected_text(i, &ctx);
+                }
+                return false;
             }
             "page.copy" => self.copy_pages(false),
             "page.cut" => self.copy_pages(true),
@@ -591,7 +649,13 @@ impl PdfCraftApp {
             "create.clipboard" => self.create_from_clipboard(),
             "optimize.reduce" => self.reduce_file_size(),
             "page.duplicate" => {
-                self.apply_edit(Edit::DuplicatePages { pages: targets });
+                self.apply_edit(Edit::DuplicatePages { pages: targets, at: None });
+            }
+            // Two or more selected pages reverse among themselves; otherwise the whole document.
+            "page.reverse" => {
+                let all = active.and_then(|i| self.views.get(i)).map_or(0, |v| v.page_count());
+                let pages = if targets.len() >= 2 { targets } else { (0..all).collect() };
+                self.apply_edit(Edit::ReversePages { pages });
             }
             "ocr.enhance_camera" => {
                 // The corners start on the document's edges when they can be found, else
@@ -612,6 +676,9 @@ impl PdfCraftApp {
             }
             "page.crop" => {
                 self.quick_tool = crate::QuickTool::Crop;
+                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
+                    v.organize = false;
+                }
                 self.notify_tr("Drag a rectangle on a page to crop it; double-click a page for Set Page Boxes");
             }
             "page.boxes" => {
@@ -636,21 +703,34 @@ impl PdfCraftApp {
         true
     }
 
+    /// Shows the next tab (or the previous one) in the strip's order, wrapping around at either
+    /// end (#1542). The Combine files tab, when open, comes after the documents. From Home the
+    /// next tab is the first and the previous one the last.
+    fn step_tab(&mut self, forward: bool) {
+        let count = self.views.len() + usize::from(self.combine_tab.open);
+        let current = if self.combine_showing() { Some(self.views.len()) } else { self.active };
+        let Some(next) = tab_after(current, count, forward) else { return };
+        if next < self.views.len() {
+            self.active = Some(next);
+        } else {
+            self.open_combine_tab();
+        }
+    }
+
     /// Run the registered keyboard shortcuts (more specific combinations first).
     pub(crate) fn registry_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
         // Buttons also own keyboard focus for Tab/Enter activation, but they must not
         // suppress document shortcuts. Text editors retain their own undo/redo handling.
         let typing = ctx.text_edit_focused();
-        // A form field's editor is open on the page: its text isn't in the document until
-        // committed. (Not egui's keyboard focus: an Escape in this frame has already cleared that,
-        // while the field has yet to see the Escape and discard its draft.)
-        let active = self.active_ids();
-        let form_typing = active.and_then(|(i, _)| self.views.get(i)).is_some_and(|v| v.forms.focus.is_some());
         let mut specs: Vec<&CommandSpec> = COMMANDS.iter().filter(|c| c.shortcut.is_some()).collect();
         specs.sort_by_key(|c| std::cmp::Reverse(c.shortcut.map(|s| s.modifier_count()).unwrap_or(0)));
         for spec in specs {
             let Some(s) = spec.shortcut else { continue };
+            // Keep the canvas's silent no-op when there is no previous/next view to visit.
+            if matches!(spec.id, "view.previous_view" | "view.next_view") && !self.command_enabled(spec) {
+                continue;
+            }
             if typing && !spec.in_text {
                 continue;
             }
@@ -666,72 +746,47 @@ impl PdfCraftApp {
                 m |= Modifiers::CTRL;
             }
             if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, key))) {
-                if form_typing {
-                    // A form field has the keyboard: let it take this frame's typing (and
-                    // Escape) first, so ⌘S saves what's on screen (#166). Runs next frame, for
-                    // this document only.
-                    self.deferred_commands.push((spec.id, active.map(|(_, id)| id)));
-                    ctx.request_repaint();
-                } else if spec.id == "file.close" && active.is_none() && crate::commands::mac_shortcuts(ctx) && !cfg!(target_arch = "wasm32") {
-                    // macOS ⌘W closes the last window when no document tabs remain (#869).
-                    // Route through the normal viewport-close path (and its quit guard),
-                    // not the disabled document-only `file.close` command.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                } else {
-                    self.execute(spec.id);
-                }
+                self.dispatch_command(ctx, spec.id);
             }
+        }
+    }
+
+    /// Run a registry command from its shortcut or a menu, which share this path.
+    pub(crate) fn dispatch_command(&mut self, ctx: &egui::Context, id: &'static str) {
+        let active = self.active_ids();
+        let form_typing = active.and_then(|(i, _)| self.views.get(i)).is_some_and(|v| v.forms.focus.is_some());
+        if form_typing {
+            // A form field has the keyboard: let it take this frame's typing (and Escape) first,
+            // so ⌘S saves what's on screen (#166). Runs next frame, for this document only.
+            self.deferred_commands.push((id, active.map(|(_, id)| id)));
+            ctx.request_repaint();
+        } else if id == "file.close" && active.is_none() && crate::commands::mac_shortcuts(ctx) && !cfg!(target_arch = "wasm32") {
+            // macOS ⌘W closes the last window when no document tabs remain (#869). Route through
+            // the normal viewport-close path (and its quit guard), not the disabled document-only
+            // `file.close` command.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            self.execute(id);
         }
     }
 }
 
-/// Render a top-level menu's registered commands (with live labels, shortcuts and enablement).
-pub(crate) fn registry_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui, menu: &str) {
-    for spec in commands::menu(menu) {
-        let label = commands::current_label(spec, &app.session, app.active_ids().map(|(_, id)| id));
-        let label = crate::i18n::menu_label(spec.id, &label);
-        // Open Recent is a submenu of the live recent list, not one action: disabled while the
-        // list is empty, otherwise each entry opens its file (or focuses the tab showing it), and
-        // Clear Recent Files at the foot empties the list (#430).
-        if spec.id == "file.open_recent" {
-            if app.recent.is_empty() {
-                ui.add_enabled(false, egui::Button::new(label));
-                continue;
+/// The tab after `current` of `count` (before it when `forward` is false), wrapping around. From
+/// no tab, forward is the first and back the last. `None` when there are no tabs.
+fn tab_after(current: Option<usize>, count: usize, forward: bool) -> Option<usize> {
+    let last = count.checked_sub(1)?;
+    Some(match (current.filter(|&i| i <= last), forward) {
+        (None, true) => 0,
+        (None, false) => last,
+        (Some(i), true) => {
+            if i == last {
+                0
+            } else {
+                i + 1
             }
-            let mut open: Option<String> = None;
-            let mut clear = false;
-            ui.menu_button(label, |ui| {
-                for r in &app.recent {
-                    if ui.button(&r.name).on_hover_text(&r.path).clicked() {
-                        open = Some(r.path.clone());
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(tl!("Clear Recent Files")).clicked() {
-                    clear = true;
-                    ui.close();
-                }
-            });
-            if let Some(p) = open {
-                app.open_recent(&p);
-                ui.close();
-            }
-            if clear {
-                app.execute("file.clear_recent");
-                ui.close();
-            }
-            continue;
         }
-        let shortcut = spec.shortcut.map(|s| shortcut_label(ui.ctx(), s)).unwrap_or_default();
-        let enabled = app.command_enabled(spec);
-        let resp = ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut));
-        if resp.clicked() {
-            app.execute(spec.id);
-            ui.close();
-        }
-    }
-    let _ = widgets::menu_item;
+        (Some(i), false) => i.checked_sub(1).unwrap_or(last),
+    })
 }
 
 #[cfg(test)]
@@ -760,5 +815,21 @@ mod tests {
         assert_eq!(command_shortcut_label(&ctx, "view.read_mode"), "⌃⌘H");
         assert_eq!(command_modifier_label(&ctx), "⌘");
         crate::i18n::set_current(previous);
+    }
+
+    /// Next and previous tab step one place and wrap around at either end; from no tab they go
+    /// to the first or the last (#1542).
+    #[test]
+    fn tab_steps_wrap_around_and_start_from_either_end() {
+        assert_eq!(tab_after(Some(0), 3, true), Some(1));
+        assert_eq!(tab_after(Some(2), 3, true), Some(0), "the last wraps to the first");
+        assert_eq!(tab_after(Some(1), 3, false), Some(0));
+        assert_eq!(tab_after(Some(0), 3, false), Some(2), "the first wraps to the last");
+        assert_eq!(tab_after(None, 3, true), Some(0));
+        assert_eq!(tab_after(None, 3, false), Some(2));
+        assert_eq!(tab_after(Some(0), 1, true), Some(0), "a single tab stays");
+        assert_eq!(tab_after(Some(7), 3, true), Some(0), "a stale index starts over");
+        assert_eq!(tab_after(None, 0, true), None);
+        assert_eq!(tab_after(Some(0), 0, false), None);
     }
 }
