@@ -11,11 +11,16 @@
 
 /// PdfCraft as craft-update knows it, with its 128 px icon and accent colour: the update
 /// prompt shows both, and an AppImage's menu entry gets the icon.
+///
+/// This fork points the update feed at its own releases (`jajafu/pdfcraft`): an in-app update
+/// then installs this fork's build (the custom app icon included) instead of upstream's.
 #[cfg(not(target_arch = "wasm32"))]
 pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.pdfcraft.png")),
     accent: Some([0xb7, 0x02, 0x28]),
-    ..craft_update::suite::PDFCRAFT
+    former_ids: &["printcraft"],
+    former_names: &["PrintCraft"],
+    ..craft_update::app::App::new("pdfcraft", "PdfCraft", "Reading, organizing and protecting PDFs", "jajafu/pdfcraft")
 };
 
 use crate::control::Host as _;
